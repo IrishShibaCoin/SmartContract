@@ -732,8 +732,8 @@ contract IrishShibaCoin is IBEP20, Ownable {
     mapping (address => bool) public isAMM;
 	
     //Token Info
-    string private constant _name = "IS Test 3 Coin";
-    string private constant _symbol = "IST3";
+    string private constant _name = "Irish Shiba Coin";
+    string private constant _symbol = "ISC";
     uint8 private constant _decimals = 18;
     uint public constant TOTAL_SUPPLY = 777 * 10**6 * 10**_decimals;     // 777,000,000
 
