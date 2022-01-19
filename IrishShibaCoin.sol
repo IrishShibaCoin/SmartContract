@@ -855,7 +855,7 @@ contract IrishShibaCoin is IBEP20, Ownable {
         return candidates[candidateIndex];
     } 
 	//Process daily taxes / daily winner, liquidity, operator 
-    function dailyDrop() public onlyOperator {
+    function dailyDropAndLiquify() public onlyOperator {
         require(candidate_count > 0, "Error: No winner.");
         address candidate = getCandidate();
 
@@ -883,7 +883,7 @@ contract IrishShibaCoin is IBEP20, Ownable {
     }
 
  	//Process daily taxes / daily winner, operator 
-    function dailyDropWithoutLiquidity() public onlyOperator {
+    function dailyDrop() public onlyOperator {
         require(candidate_count > 0, "Error: No winner.");
         address candidate = getCandidate();
         
