@@ -729,6 +729,8 @@ contract IrishShibaCoin is IBEP20, Ownable {
     mapping (address => uint) private _balances;
     mapping (address => mapping (address => uint)) private _allowances;
     mapping (address => bool) public excludedFromFees;
+    mapping (address => bool) public excludedFromDailyDrop;
+    mapping (address => bool) public excludedFromMaxTokensPerWallet;
     mapping (address => bool) public isAMM;
 	
     //Token Info
@@ -738,26 +740,21 @@ contract IrishShibaCoin is IBEP20, Ownable {
     uint public constant TOTAL_SUPPLY = 777 * 10**6 * 10**_decimals;     // 777,000,000
 
     //Buy, Sell, Transfer Taxes
-    uint public buyTax = 75;                 	// 0.75%
-    uint public sellTax = 150;               	// 1.5%
+    uint public buyTax = 250;                 	// 2.5%
+    uint public sellTax = 500;               	// 5%
     uint public transferTax = 0;				// 0%
-
-    bool inSwapAndLiquify;
-    bool public swapAndLiquifyEnabled = true;
-    
-    uint256 public _maxTokensToBuySell = 777 * 10**4 * 10**18;   			// 1%
-    uint256 private _maxTokensPerWallet = TOTAL_SUPPLY * 2 / 100;  			// 2%
+	  uint public minTokensToLiquify = 777 * 10**2 * 10**_decimals;				// 0%    
 
     //TODO: mainnet
     //TestNet
-    // address private constant PancakeRouter = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
+    // address public constant PancakeRouter = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
     //MainNet
-    address private constant PancakeRouter=0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public constant PancakeRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
 
     uint private _circulatingSupply = TOTAL_SUPPLY;
     
     address private _pancakePairAddress; 
-    IPancakeRouter02 private  _pancakeRouter;
+    IPancakeRouter02 private _pancakeRouter;
     
     address public operator;
     address public developer;
@@ -770,302 +767,323 @@ contract IrishShibaCoin is IBEP20, Ownable {
 	
     uint constant public MAX_BUY_TAX = 500;				// 5%
     uint constant public MAX_SELL_TAX = 500;			// 5%
-    uint constant public MAX_TRANSFER_TAX = 500;		// 5%
+    uint constant public MAX_TRANSFER_TAX = 0;		    // 0%
+    uint constant public MIN_TOKENS_PER_WALLET = 200;	// 2%	
 
-    function setFees(uint liquidityFee_, uint operationFee_) public onlyOperator {
-        liquidityFee = liquidityFee_;
-        operationFee = operationFee_;
+    uint256 private _maxTokensPerWallet = TOTAL_SUPPLY * MIN_TOKENS_PER_WALLET / 10000;  			// 2%
+
+    function setMinTokensToLiquify(uint256 newMinTokensToLiquify) public onlyOperator {
+      minTokensToLiquify = newMinTokensToLiquify * 10**_decimals;
+    }
+    function setFees(uint newLiquidityFee, uint newOperationFee) public onlyOperator {
+      liquidityFee = newLiquidityFee;
+      operationFee = newOperationFee;
     }
 
-    function changeOperator(address operator_) public onlyOperator {
-        operator = operator_;
-        excludedFromFees[operator] = true;
+    function changeOperator(address newOperator) public onlyOperator {
+      operator = newOperator;
+      excludedFromFees[operator] = true;
     }
 	
-    function changeDeveloper(address developer_) public onlyOperator {
-        developer = developer_;
-        excludedFromFees[developer] = true;
+    function changeDeveloper(address newDeveloper) public onlyOperator {
+      developer = newDeveloper;
+      excludedFromFees[developer] = true;
     }
 	
     //modifier for functions only the operator can call
     modifier onlyOperator() {
-        require(operator == msg.sender || msg.sender == owner() , "Caller not operator");
-        _;
+      require(operator == msg.sender || msg.sender == owner() , "Caller not operator");
+      _;
     }
 	
     //----------------- Constructor ------------------//
-    constructor (address operator_) {
-        _balances[operator_] = _circulatingSupply;
-        emit Transfer(address(0), operator_, _circulatingSupply);
+    constructor (address creator) {
+	  operator = creator;
+      _balances[operator] = _circulatingSupply;
+      emit Transfer(address(0), operator, _circulatingSupply);
 
-        // Pancake Router
-        _pancakeRouter = IPancakeRouter02(PancakeRouter);
-        //Creates a Pancake Pair
-        _pancakePairAddress = IPancakeFactory(_pancakeRouter.factory()).createPair(address(this), _pancakeRouter.WETH());
-        isAMM[_pancakePairAddress] = true;
-        
-        //contract creator is by default marketing wallet
-        //owner pancake router and contract is excluded from Taxes
-        excludedFromFees[msg.sender] = true;
-        excludedFromFees[operator_] = true;
-        excludedFromFees[PancakeRouter] = true;
-        excludedFromFees[address(this)] = true;
+      // Pancake Router
+      _pancakeRouter = IPancakeRouter02(PancakeRouter);
+  
+      //Creates a Pancake Pair
+      _pancakePairAddress = IPancakeFactory(_pancakeRouter.factory()).createPair(address(this), _pancakeRouter.WETH());
+      isAMM[_pancakePairAddress] = true;
+      
+      excludedFromFees[msg.sender] = true;
+      excludedFromFees[operator] = true;
+      excludedFromFees[PancakeRouter] = true;
+      excludedFromFees[address(this)] = true;
+		
+      excludedFromDailyDrop[msg.sender] = true;
+      excludedFromDailyDrop[operator] = true;
+      excludedFromDailyDrop[PancakeRouter] = true;
+      excludedFromDailyDrop[address(this)] = true;
+      
+      excludedFromMaxTokensPerWallet[msg.sender] = true;
+      excludedFromMaxTokensPerWallet[operator] = true;
+      excludedFromMaxTokensPerWallet[PancakeRouter] = true;
+      excludedFromMaxTokensPerWallet[address(this)] = true;		
     }
 
     uint candidate_count = 0;
-	  mapping(uint=>address) candidates;
+	mapping(uint=>address) candidates;
     mapping(uint=>uint) rates;
     mapping(uint=>uint) minValues;
     mapping(uint=>uint) maxValues;
     uint totalRate = 0;
 
-    function setWinner(address candidate, uint rate_) public onlyOperator {
-        candidate_count = candidate_count + 1;
-        if ( candidate_count == 1 ) {
-            minValues[candidate_count] = 1;
-            maxValues[candidate_count] = rate_;
-        }
-        else {
-            minValues[candidate_count] = maxValues[candidate_count-1] + 1;
-            maxValues[candidate_count] = minValues[candidate_count] + rate_;
-        }
-        candidates[candidate_count] = candidate;
-        rates[candidate_count] = rate_;
-        totalRate = totalRate + rate_;
+    function setCandidate(address candidate, uint rate) public onlyOperator {
+      candidate_count = candidate_count + 1;
+      if ( candidate_count == 1 ) {
+        minValues[candidate_count] = 1;
+        maxValues[candidate_count] = rate;
+      }
+      else {
+        minValues[candidate_count] = maxValues[candidate_count-1] + 1;
+        maxValues[candidate_count] = minValues[candidate_count] + rate;
+      }
+      candidates[candidate_count] = candidate;
+      rates[candidate_count] = rate;
+      totalRate = totalRate + rate;
     }
     
     event DailyDropped(address winner, uint winnerAmount, uint liquidityAmount, uint operationAmount, uint developerAmount);
 	
-    function getCandidate() private view returns(address) {
-        uint RN = uint(keccak256(abi.encodePacked(
-            block.timestamp + block.difficulty +
-            ((uint(keccak256(abi.encodePacked(block.coinbase)))) / (block.timestamp)) +
-            block.gaslimit + 
-            ((uint(keccak256(abi.encodePacked(msg.sender)))) / (block.timestamp)) +
-            block.number
-        ))) % totalRate;
+    function getWinner() private view returns(address) {
+      uint RN = uint(keccak256(abi.encodePacked(
+          block.timestamp + block.difficulty +
+          ((uint(keccak256(abi.encodePacked(block.coinbase)))) / (block.timestamp)) +
+          block.gaslimit + 
+          ((uint(keccak256(abi.encodePacked(msg.sender)))) / (block.timestamp)) +
+          block.number
+      ))) % totalRate;
 
-        uint candidateIndex = 0;		
-        for(uint i = 1; i <= candidate_count; i++) {
-            if ( minValues[i] <= RN && RN <= maxValues[i] ) {
-                candidateIndex = i;
-            }
+      uint candidateIndex = 0;		
+      for(uint i = 1; i <= candidate_count; i++) {
+        if ( minValues[i] <= RN && RN <= maxValues[i] ) {
+          candidateIndex = i;
         }
-        if (candidateIndex == 0) candidateIndex = 1;
-        return candidates[candidateIndex];
+      }
+      if (candidateIndex == 0) candidateIndex = 1;
+      return candidates[candidateIndex];
     } 
+	
 	//Process daily taxes / daily winner, liquidity, operator 
     function dailyDropAndLiquify() public onlyOperator {
-        require(candidate_count > 0, "Error: No winner.");
-        address candidate = getCandidate();
+      require(candidate_count > 0, "Error: No winner.");
+      address winner = getWinner();
+		
+      uint dailyTaxSum = (_dailyTaxSum > _balances[address(this)]) ? _balances[address(this)] : _dailyTaxSum;		
 
-		    uint dailyPrizeToken = (_dailyTaxSum > _balances[address(this)]) ? _balances[address(this)] : _dailyTaxSum;
-        uint winnerAmount = _calculateFee(dailyPrizeToken, dailyWinerFee, 10000);
-        _balances[candidate] = _balances[candidate] + winnerAmount;
-        uint liquidityAmount = _calculateFee(dailyPrizeToken, liquidityFee, 10000);
+      uint winnerAmount = _calculateFee(dailyTaxSum, dailyWinerFee, 10000);
+      uint liquidityAmount = _calculateFee(dailyTaxSum, liquidityFee, 10000);
+      uint operationAmount = _balances[address(this)] - winnerAmount - liquidityAmount;		
+     
+      if (liquidityAmount > minTokensToLiquify) {
         swapAndLiquify(liquidityAmount);
-        uint operationAmount = _calculateFee(dailyPrizeToken, operationFee, 10000);
-        _balances[operator] = _balances[operator] + operationAmount;
-        uint developerAmount = dailyPrizeToken - (winnerAmount+liquidityAmount+operationAmount);
-        _balances[developer] = _balances[developer] + developerAmount;
-        
-        for(uint i = 0; i < candidate_count; i++) {
-            delete minValues[i];
-            delete maxValues[i];
-            delete candidates[i];
-            delete rates[i];
-        }
-        _dailyTaxSum = 0;
-        candidate_count = 0;
-        totalRate = 0;
+        _feelessTransfer(address(this), operator, operationAmount);
+      } else {        
+        _feelessTransfer(address(this), operator, liquidityAmount + operationAmount);
+      }
+	    _feelessTransfer(address(this), winner, winnerAmount);
+      for(uint i = 0; i < candidate_count; i++) {
+          delete minValues[i];
+          delete maxValues[i];
+          delete candidates[i];
+          delete rates[i];
+      }
+      _dailyTaxSum = 0;
+      candidate_count = 0;
+      totalRate = 0;
 
-        emit DailyDropped(candidate, winnerAmount, liquidityAmount, operationAmount, developerAmount);
+      emit DailyDropped(winner, winnerAmount, liquidityAmount, operationAmount, 0);
     }
 
  	//Process daily taxes / daily winner, operator 
     function dailyDrop() public onlyOperator {
-        require(candidate_count > 0, "Error: No winner.");
-        address candidate = getCandidate();
+      require(candidate_count > 0, "Error: No winner.");
+      address winner = getWinner();
         
-		    uint dailyPrizeToken = (_dailyTaxSum > _balances[address(this)]) ? _balances[address(this)] : _dailyTaxSum;
-        uint winnerAmount = _calculateFee(dailyPrizeToken, dailyWinerFee, 10000);
-        _balances[candidate] = _balances[candidate] + winnerAmount;
+	  uint dailyTaxSum = (_dailyTaxSum > _balances[address(this)]) ? _balances[address(this)] : _dailyTaxSum;
 		
-        uint otherAmount = dailyPrizeToken - winnerAmount;
-        _balances[operator] = _balances[operator] + otherAmount;
-        _balances[address(this)] = _balances[address(this)] - dailyPrizeToken;
+      uint winnerAmount = _calculateFee(dailyTaxSum, dailyWinerFee, 10000);
+      uint liquidityAmount = _calculateFee(dailyTaxSum, liquidityFee, 10000);
+      uint operationAmount = _balances[address(this)] - winnerAmount - liquidityAmount;
+		
+      _feelessTransfer(address(this), winner, winnerAmount);	
+      _feelessTransfer(address(this), operator, liquidityAmount + operationAmount);	
         
-        for(uint i = 0; i < candidate_count; i++) {
-            delete minValues[i];
-            delete maxValues[i];
-            delete candidates[i];
-            delete rates[i];
-        }
-        _dailyTaxSum = 0;
-        candidate_count = 0;
-        totalRate = 0;
+      for(uint i = 0; i < candidate_count; i++) {
+        delete minValues[i];
+        delete maxValues[i];
+        delete candidates[i];
+        delete rates[i];
+      }
+      _dailyTaxSum = 0;
+      candidate_count = 0;
+      totalRate = 0;
 
-        emit DailyDropped(candidate, winnerAmount, 0, otherAmount, 0);
+      emit DailyDropped(winner, winnerAmount, liquidityAmount, operationAmount, 0);
     }
 
     //Transfer function, every transfer runs through this function
     function _transfer(address sender, address recipient, uint amount) private{
-        require(sender != address(0), "Transfer from zero");
-        require(recipient != address(0), "Transfer to zero");
-		
-        if (isAMM[recipient] == false && recipient != operator ) {
-            require((_balances[recipient] + amount) <= _maxTokensPerWallet, "Transfer exceeds the maxTokensPerWallet.");
-        }        
+      require(sender != address(0), "Transfer from zero");
+      require(recipient != address(0), "Transfer to zero");
+  
+      if (isAMM[recipient] == false && recipient != operator) {
+        require(excludedFromMaxTokensPerWallet[recipient] == false && (_balances[recipient] + amount) <= _maxTokensPerWallet, "Transfer exceeds the maxTokensPerWallet.");
+      }
 
-        //Pick transfer
-        if(excludedFromFees[sender] || excludedFromFees[recipient])
-            _feelessTransfer(sender, recipient, amount);
-        else{ 
-            _taxedTransfer(sender, recipient, amount);                  
-        }
+      //Pick transfer
+      if(excludedFromFees[sender] || excludedFromFees[recipient])
+        _feelessTransfer(sender, recipient, amount);
+      else { 
+        _taxedTransfer(sender, recipient, amount);                  
+      }
     }
 	
     //Transfer function with fee
     function _taxedTransfer(address sender, address recipient, uint amount) private {
-        uint senderBalance = _balances[sender];
-        require(senderBalance >= amount, "Transfer exceeds balance");
-        if ( sender != owner() && recipient != owner() )
-            require( amount <= _maxTokensToBuySell, "Transfer exceeds the maxTokensToBuySell" );
+      uint senderBalance = _balances[sender];
+      require(senderBalance >= amount, "Transfer exceeds balance");
 
-        bool isBuy = isAMM[sender];
-        bool isSell = isAMM[recipient];
+      bool isBuy = isAMM[sender];
+      bool isSell = isAMM[recipient];
 
-        uint tax;
-        if (isSell) tax = sellTax;
-        else if(isBuy) tax = buyTax;
-        else tax = transferTax;
+      uint tax;
+      if (isSell) tax = sellTax;
+      else if(isBuy) tax = buyTax;
+      else tax = transferTax;
 
-        uint256 contractTokenBalance = _balances[address(this)];
-        if (contractTokenBalance >= _maxTokensToBuySell) {
-            contractTokenBalance = _maxTokensToBuySell;
-        }
+      //Subtract the Taxed Tokens from the amount
+      uint taxAmount = _calculateFee(amount, tax, 10000);
+      uint taxedAmount = amount - taxAmount;
 
-        if ( (sender!=_pancakePairAddress) && (!manualSwap) && (!_isSwappingContractModifier) )
-            swapAndLiquify(contractTokenBalance);
-
-        //Subtract the Taxed Tokens from the amount
-        uint taxAmount = _calculateFee(amount, tax, 10000);
-        uint taxedAmount = amount-taxAmount;
-
-        _balances[sender] -= amount;
-        _balances[address(this)] += taxAmount;
-        _balances[recipient] += taxedAmount;
-        _dailyTaxSum = _dailyTaxSum + taxAmount;
-        
-        emit Transfer(sender, recipient, taxedAmount);
+      _balances[sender] -= amount;
+      _balances[address(this)] += taxAmount;
+      _balances[recipient] += taxedAmount;
+      _dailyTaxSum = _dailyTaxSum + taxAmount;
+      
+      emit Transfer(sender, recipient, taxedAmount);
     }
 	
 	//Transfer function without fee
     function _feelessTransfer(address sender, address recipient, uint amount) private{
-        uint senderBalance = _balances[sender];
-        require(senderBalance >= amount, "Transfer exceeds balance");
-        _balances[sender] -= amount;
-        _balances[recipient] += amount;      
-        emit Transfer(sender, recipient, amount);
+      uint senderBalance = _balances[sender];
+      require(senderBalance >= amount, "Transfer exceeds balance");
+      _balances[sender] -= amount;
+      _balances[recipient] += amount;      
+      emit Transfer(sender, recipient, amount);
     }
     
     //Calculates fee
     function _calculateFee(uint amount, uint tax, uint taxPercent) private pure returns (uint) {
-        return amount*tax/taxPercent;
-    }    
+      return amount*tax/taxPercent;
+    }
 
     //---------------------- Swap Contract Tokens ------------------------//
-    event SwapAndLiquifyEnabledUpdated(bool enabled);
     event SwapAndLiquify( uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiqudity );
-
-    //switches autoLiquidity and marketing BNB generation during transfers
-    bool public manualSwap;
-    function switchManualSwap(bool manual) public onlyOperator {
-        manualSwap = manual;
-    }
-	
-    //Locks the swap if already swapping
-    bool private _isSwappingContractModifier;
-    modifier lockTheSwap {
-        _isSwappingContractModifier = true;
-        _;
-        _isSwappingContractModifier = false;
-    }
         
-    function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
-        // split the contract balance into halves
-        uint256 half = contractTokenBalance/2;
-        uint256 otherHalf = contractTokenBalance-half;
+    function swapAndLiquify(uint256 contractTokenBalance) private {
+      // split the contract balance into halves
+      uint256 half = contractTokenBalance/2;
+      uint256 otherHalf = contractTokenBalance-half;
 
-        // capture the contract's current BNB balance.
-        // this is so that we can capture exactly the amount of BNB that the
-        // swap creates, and not make the liquidity event include any BNB that
-        // has been manually sent to the contract
-        uint256 initialBalance = address(this).balance;
+      // capture the contract's current BNB balance.
+      // this is so that we can capture exactly the amount of BNB that the
+      // swap creates, and not make the liquidity event include any BNB that
+      // has been manually sent to the contract
+      uint256 initialBalance = address(this).balance;
 
-        // swap tokens for BNB
-        _swapTokenForBNB(half); // <- this breaks the BNB -> HATE swap when swap+liquify is triggered
+      // swap tokens for BNB
+      _swapTokenForBNB(half); // <- this breaks the BNB -> HATE swap when swap+liquify is triggered
 
-        // how much BNB did we just swap into?
-        uint256 newBalance = address(this).balance - initialBalance;
+      // how much BNB did we just swap into?
+      uint256 newBalance = address(this).balance - initialBalance;
 
-        // add liquidity to uniswap
-        _addLiquidity(otherHalf, newBalance);
-        
-        emit SwapAndLiquify(half, newBalance, otherHalf);
+      // add liquidity to uniswap
+      _addLiquidity(otherHalf, newBalance);
+      
+      emit SwapAndLiquify(half, newBalance, otherHalf);
     }
     
     //swaps tokens on the contract for BNB
     function _swapTokenForBNB(uint amount) private {
-        _approve(address(this), address(_pancakeRouter), amount);
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = _pancakeRouter.WETH();
+      _approve(address(this), address(_pancakeRouter), amount);
+      address[] memory path = new address[](2);
+      path[0] = address(this);
+      path[1] = _pancakeRouter.WETH();
 
-        try _pancakeRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            amount,
-            0,
-            path,
-            address(this),
-            block.timestamp
-        ){}
-        catch{}
+      try _pancakeRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+          amount,
+          0,
+          path,
+          address(this),
+          block.timestamp
+      ){}
+      catch{}
     }
 	
     //Adds Liquidity directly to the contract where LP are locked
     function _addLiquidity(uint tokenamount, uint bnbamount) private {
-        _approve(address(this), address(_pancakeRouter), tokenamount);
-        _pancakeRouter.addLiquidityETH{value: bnbamount}(
-            address(this),
-            tokenamount,
-            0,
-            0,
-            address(this),
-            block.timestamp
-        );
+      _approve(address(this), address(_pancakeRouter), tokenamount);
+      _pancakeRouter.addLiquidityETH{value: bnbamount}(
+          address(this),
+          tokenamount,
+          0,
+          0,
+          address(this),
+          block.timestamp
+      );
     }
 
     //------------------------- Settings --------------------------//
-    event OnSetTaxes(uint buy, uint sell, uint transfer_);
-    function setTaxes(uint buy, uint sell, uint transfer_) public onlyOperator {        
-        buyTax = buy >= MAX_BUY_TAX ? MAX_BUY_TAX : buy;
-        sellTax = sell >= MAX_SELL_TAX ? MAX_SELL_TAX : sell;
-        transferTax = transfer_ >= MAX_TRANSFER_TAX ? MAX_TRANSFER_TAX : transfer_;
-        emit OnSetTaxes(buy, sell, transfer_);
+    event OnSetTaxes(uint buy, uint sell, uint transfer);
+    function setTaxes(uint newBuyTax, uint newSellTax, uint newTransferTax) public onlyOperator {        
+      buyTax = newBuyTax >= MAX_BUY_TAX ? MAX_BUY_TAX : newBuyTax;
+      sellTax = newSellTax >= MAX_SELL_TAX ? MAX_SELL_TAX : newSellTax;
+      transferTax = newTransferTax >= MAX_TRANSFER_TAX ? MAX_TRANSFER_TAX : newTransferTax;
+      emit OnSetTaxes(newBuyTax, newSellTax, newTransferTax);
     }
 	
     //For AMM addresses buy and sell taxes apply
     function setAMM(address AMM, bool Add) public onlyOperator {
-        require(AMM!=_pancakePairAddress,"can't change pancake");
-        isAMM[AMM] = Add;
+      require(AMM != _pancakePairAddress, "Can't change pancakeswap");
+      isAMM[AMM] = Add;
+
+      excludedFromFees[AMM] = Add;
+      excludedFromDailyDrop[AMM] = Add;
+      excludedFromMaxTokensPerWallet[AMM] = Add;
+      emit ExcludedAccountFromDailyDrop(AMM, Add);
     }
     
-    event ExcludeAccount(address account, bool exclude);
-    //Exclude/Include account from fees (eg. CEX)
-    function excludeAccountFromFees(address account, bool exclude) public onlyOperator {
-        require(account != address(this),"can't Include the contract");
-        excludedFromFees[account] = exclude;
-        emit ExcludeAccount(account, exclude);
+    event ExcludeAccountFromFee(address account, bool exclude);
+    function setExcludeFromFee(address account, bool exclude) public onlyOperator {
+      require(account != address(this), "Can't process the contract address.");
+      excludedFromFees[account] = exclude;
+      emit ExcludeAccountFromFee(account, exclude);
+    }
+
+    event ExcludedAccountFromDailyDrop(address account, bool exclude);
+    function setExcludeFromDailyDrop(address account, bool exclude) public onlyOperator {
+      require(account != address(this), "Can't process the contract address.");
+      excludedFromDailyDrop[account] = exclude;
+      emit ExcludedAccountFromDailyDrop(account, exclude);
+    }
+
+    event ExcludedAccountFromMaxTokensPerWallet(address account, bool exclude);
+    function setExcludeFromMaxTokensPerWallet(address account, bool exclude) public onlyOperator {
+      require(account != address(this), "Can't process the contract address");
+      excludedFromMaxTokensPerWallet[account] = exclude;
+      emit ExcludedAccountFromMaxTokensPerWallet(account, exclude);
+    }
+
+    event ChangedMaxTokensPerWallet(uint256 newMaxTokensPerWallet);
+    function setMaxTokensPerWallet(uint256 newMaxTokensPerWallet) public onlyOperator {
+      require(newMaxTokensPerWallet >= MIN_TOKENS_PER_WALLET, "Can't set less than 2%");
+      _maxTokensPerWallet = TOTAL_SUPPLY * newMaxTokensPerWallet / 10000;
+      emit ChangedMaxTokensPerWallet(newMaxTokensPerWallet);
     }
 
     //external//////////////////////////////////////////////////////////////////////////////////////////////
